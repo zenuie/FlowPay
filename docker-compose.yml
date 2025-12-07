@@ -1,0 +1,31 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: flowpay
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: flowpay
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # 針對開發環境優化參數 (關閉 fsync 可以讓測試跑快一點，但正式環境絕對不能關)
+    command: postgres -c fsync=off -c synchronous_commit=off -c full_page_writes=off
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine # 2025年應該是 RabbitMQ 4.x 了
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=poposing
+      - RABBITMQ_DEFAULT_PASS=poposing1234
+
+  redis:
+    image: redis:7.2-alpine # 選一個穩定的 LTS 版本
+    ports:
+      - "6379:6379"
+
+volumes:
+  postgres_data:
