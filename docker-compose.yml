@@ -27,5 +27,16 @@ services:
     ports:
       - "6379:6379"
 
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+    ports:
+      - "16686:16686" # Web UI
+      - "4317:4317" # OTLP gRPC receive
+      - "4318:4318" # OTLP HTTP receive
+
+
 volumes:
   postgres_data:

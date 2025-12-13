@@ -3,16 +3,21 @@ from typing import Any, Dict, Generator
 
 import pika
 from fastapi import Depends, FastAPI, HTTPException
+from opentelemetry.propagate import inject
 from sqlmodel import Session, select
 
 from core.cache import redis_client
 from core.database import engine
 from core.messaging import RabbitMQConnector
 from core.security import verify_signature
+from core.telemetry import instrument_app, setup_telemetry
 from domains.payment.model import PaymentEvent
 from domains.payment.schemas import WebhookPayload
 
+setup_telemetry("flowpay-api")
 app = FastAPI()
+
+instrument_app(app, engine)
 
 
 # Dependency Injection
@@ -35,6 +40,19 @@ async def webhook(
     try:
         # 1. 序列化訊息
         message = payload.json()
+
+        headers: Dict[str, Any] = {}
+        inject(headers)
+        properties = pika.BasicProperties(
+            delivery_mode=2,
+            headers=headers,
+        )
+        channel.basic_publish(
+            exchange="",
+            routing_key="payment_vents",
+            body=message,
+            properties=properties,
+        )
 
         # 2. 丟進 Queue
         channel.basic_publish(
