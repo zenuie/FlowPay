@@ -7,7 +7,7 @@ from redis import Redis
 REDIS_URL = "redis://localhost:6379/0"
 
 
-def get_redis_client() -> Redis[str]:
+def get_redis_client() -> Redis:  # type: ignore[type-arg]
     try:
         # decode_responses=True 讓拿出來的資料直接是字串，不用 decode bytes
         client = redis.from_url(REDIS_URL, decode_responses=True)
@@ -21,4 +21,4 @@ def get_redis_client() -> Redis[str]:
 
 
 # 建立一個單例物件供大家使用
-redis_client: Redis[str] = get_redis_client()
+redis_client: Redis = get_redis_client()  # type: ignore[type-arg]

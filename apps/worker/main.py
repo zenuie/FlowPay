@@ -5,51 +5,68 @@ import signal
 from datetime import timedelta
 from typing import Any
 
+from opentelemetry import trace
+from opentelemetry.propagate import extract
+
 from core.cache import redis_client
+from core.database import engine
 from core.messaging import RabbitMQConnector
+from core.telemetry import instrument_app, setup_telemetry
 from domains.payment.service import PaymentService
 
 # 實例化 Service (Singleton)
 payment_service = PaymentService()
 
+# 1. 初始化 Worker 的 Telemetry
+setup_telemetry("flowpay-worker")
+# Worker 沒有 FastAPI app，所以傳 None，但要監控 DB/Redis/MQ
+instrument_app(None, engine)
+
+tracer = trace.get_tracer(__name__)
+
 
 def process_message(ch: Any, method: Any, properties: Any, body: bytes) -> None:
-    try:
-        data = json.loads(body)
-        order_id = data.get("order_id")
-        lock_key = f"processed:{order_id}"
+    # 從 RabbitMQ 的 headers 裡把 trace_id 拿出來
+    headers = properties.headers or {}
+    ctx = extract(headers)
+    with tracer.start_as_current_span("process_payment_task", context=ctx):
+        try:
+            data = json.loads(body)
+            order_id = data.get("order_id")
+            lock_key = f"processed:{order_id}"
 
-        # 如果 key 不存在 -> 寫入成功，回傳 True -> 代表我是第一個，繼續執行
-        # 如果 key 已存在 -> 寫入失敗，回傳 None -> 代表有人搶先了，直接 ACK
-        is_first = redis_client.set(lock_key, "1", nx=True, ex=timedelta(hours=24))
+            # 如果 key 不存在 -> 寫入成功，回傳 True -> 代表我是第一個，繼續執行
+            # 如果 key 已存在 -> 寫入失敗，回傳 None -> 代表有人搶先了，直接 ACK
+            is_first = redis_client.set(lock_key, "1", nx=True, ex=timedelta(hours=24))
 
-        if not is_first:
-            logging.info(f" ♻️ [Redis] Order {order_id} locked/processed. Skipping.")
-            ch.basic_ack(delivery_tag=method.delivery_tag)
-            return
+            if not is_first:
+                logging.info(f" ♻️ [Redis] Order {order_id} locked/processed. Skipping.")
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+                return
 
-        # [核心] 呼叫業務邏輯層
-        # Worker 不應該知道 DB 怎麼連，也不應該知道怎麼扣款
-        # 它只管 Service 執行成不成功
-        success = payment_service.process_payment(
-            order_id=order_id,
-            amount=data.get("amount"),
-            status=data.get("status"),
-            callback_url=data.get("callback_url"),
-        )
+            # [核心] 呼叫業務邏輯層
+            # Worker 不應該知道 DB 怎麼連，也不應該知道怎麼扣款
+            # 它只管 Service 執行成不成功
+            success = payment_service.process_payment(
+                order_id=order_id,
+                amount=data.get("amount"),
+                status=data.get("status"),
+                callback_url=data.get("callback_url"),
+            )
 
-        # 業務邏輯成功 (包含扣款成功 或 扣款失敗但已紀錄)
-        if success:
-            # [防線 2] 寫入 Redis 標記已處理
-            ch.basic_ack(delivery_tag=method.delivery_tag)
+            # 業務邏輯成功 (包含扣款成功 或 扣款失敗但已紀錄)
+            if success:
+                # [防線 2] 寫入 Redis 標記已處理
+                ch.basic_ack(delivery_tag=method.delivery_tag)
 
-    except Exception as e:
-        logging.error(f" ❌ System Error: {e}")
-        # 決定重試策略：
-        # 如果是 ConnectionError，也許可以 NACK requeue=True (這需要更細的判斷)
-        # 這裡我們先統一進 DLQ
-        logging.warning(" 💀 Moving message to DLQ...")
-        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+        except Exception as e:
+            logging.error(f" ❌ System Error: {e}")
+            # 決定重試策略：
+            # 如果是 ConnectionError，也許可以 NACK requeue=True (這需要更細的判斷)
+            # 這裡我們先統一進 DLQ
+            logging.warning(" 💀 Moving message to DLQ...")
+            trace.get_current_span().record_exception(e)
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
 
 # -------------------------------------------------------------
