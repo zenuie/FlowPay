@@ -66,7 +66,7 @@ graph
 *   **Cache & Lock:** Redis
 *   **Database:** PostgreSQL 15
 *   **ORM:** SQLModel (SQLAlchemy 2.0)
-*   **Testing:** Pytest, HTTPX, K6 (Load Testing)
+*   **Testing:** Pytest, HTTPX
 *   **DevOps:** Docker, Docker Compose, GitHub Actions
 
 ---
